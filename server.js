@@ -1,51 +1,52 @@
-const express = require("express");
-const { default: makeWASocket, useMultiFileAuthState } = require("@whiskeysockets/baileys");
-const { Server } = require("socket.io");
-const qrcode = require("qrcode-terminal");
-const cors = require("cors");
-const http = require("http");
-require("dotenv").config();
+import express from 'express';
+import { default as makeWASocket, DisconnectReason, useMultiFileAuthState } from '@whiskeysockets/baileys';
+import dotenv from 'dotenv';
+import http from 'http';
+import { Server } from 'socket.io';
+
+dotenv.config();
 
 const app = express();
-app.use(cors());
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+const io = new Server(server);
 
-async function start() {
-  const { state, saveCreds } = await useMultiFileAuthState("auth_info");
-  const sock = makeWASocket({ auth: state });
+const PORT = process.env.PORT || 5000;
 
-  sock.ev.on("connection.update", ({ connection, qr }) => {
-    if (qr) {
-      qrcode.generate(qr, { small: true });
-      io.emit("qr", qr);
-    }
-    if (connection === "open") {
-      console.log("✅ WhatsApp Connected");
-      io.emit("ready", true);
-    }
-    if (connection === "close") {
-      console.log("❌ Connection Closed");
-    }
+let sock;
+let qrData = '';
+
+async function startSock() {
+  const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+  sock = makeWASocket({
+    auth: state,
+    printQRInTerminal: true
   });
 
-  sock.ev.on("creds.update", saveCreds);
+  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
+    if (qr) {
+      qrData = qr;
+      io.emit('qr', qrData);
+    }
 
-  sock.ev.on("messages.upsert", async (m) => {
-    const msg = m.messages[0];
-    if (!msg.key.fromMe && msg.message?.conversation) {
-      console.log("Received:", msg.message.conversation);
-      io.emit("new_message", {
-        from: msg.key.remoteJid,
-        message: msg.message.conversation
-      });
+    if (connection === 'close') {
+      const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+      if (shouldReconnect) {
+        startSock();
+      }
     }
   });
 }
 
-start();
+startSock();
 
-const PORT = process.env.PORT || 5000;
+io.on('connection', (socket) => {
+  console.log('Client connected');
+  if (qrData) {
+    socket.emit('qr', qrData);
+  }
+});
+
 server.listen(PORT, () => {
-  console.log(`🚀 WhatsApp Gateway running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
